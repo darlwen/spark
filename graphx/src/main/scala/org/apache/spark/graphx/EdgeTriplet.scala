@@ -25,7 +25,7 @@ import scala.reflect.ClassTag
  * @tparam VD the type of the vertex attribute.
  * @tparam ED the type of the edge attribute
  */
-class EdgeTriplet[VD: ClassTag, ED: ClassTag] extends Edge[ED] {
+class EdgeTriplet[VD, ED] extends Edge[ED] {
   /**
    * The source vertex attribute
    */

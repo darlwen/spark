@@ -37,7 +37,7 @@ object LDA {
                var maxIter  : Int)
     extends Serializable
 
-  def run(edges: RDD[Edge[Int]], conf: Conf) :
+  def run(edges: RDD[Edge[Array[Int]]], conf: Conf) :
     (Graph[DoubleMatrix, DoubleMatrix], DoubleMatrix, Double) = {
 
     //Generate default vertex attribute
@@ -63,28 +63,25 @@ object LDA {
     }
 
     def initMapFunc(conf: Conf)
-                   (et: EdgeTriplet[DoubleMatrix, Int])
-    : DoubleMatrix = {
-      val tokenTopic = new DoubleMatrix(et.attr)
+                   (et: EdgeTriplet[DoubleMatrix, Array[Int]])
+    : Array[Int] = {
+      val tokenTopic = new Array[Int](et.attr)
       for(i <- 0 until et.attr) {
-        tokenTopic.put(i, Random.nextInt(conf.topicNum).toDouble)
+        tokenTopic(i) = Random.nextInt(conf.topicNum)
       }
       tokenTopic
     }
 
     def vertexUpdateFunc(conf: Conf)
-                        (et: EdgeTriplet[DoubleMatrix, DoubleMatrix])
+                        (et: EdgeTriplet[DoubleMatrix, Array[Int]])
     : Iterator[(VertexId, DoubleMatrix)] = {
       val doc = new DoubleMatrix(conf.topicNum)
       val word = new DoubleMatrix(conf.topicNum)
       for (i <- 0 until et.attr.length) {
-        val t = et.attr.get(i).toInt
+        val t = et.attr(i)
         doc.put(t, doc.get(t) + 1)
         word.put(t, word.get(t) + 1)
       }
-      println("vertexUpdateFunc: size: " + et.attr.length + " topic: " + et.attr.get(0))
-      println("docId: " + et.srcId + " k1: " + doc.get(0) + " k2: " + doc.get(1))
-      println("wordId: " + et.dstId + " k1: " + word.get(0) + " k2: " + word.get(1))
       Iterator((et.srcId, doc), (et.dstId, word))
     }
 
@@ -94,27 +91,16 @@ object LDA {
       val (doc, word) = (et.srcAttr, et.dstAttr)
       val tokenTopic = new DoubleMatrix(et.attr.length)
       for ( i <- 0 until et.attr.length) {
-        val t = et.attr.get(i).toInt
-        println("topic: " + t)
-        println("docId: " + et.srcId, "wordId: " + et.dstId)
-        println("before: doc.get(t): " + doc.get(t))
+        val t = et.attr(i)
         doc.put(t, doc.get(t) - 1)
-        println("after: doc.get(t): " + doc.get(t))
-        println("before: word.get(t): " + word.get(t))
         word.put(t, word.get(t) - 1)
-        println("after: word.get(t): " + word.get(t))
-        println("before: topicWord.get(t): " + topicWord.get(t))
         topicWord.put(t, topicWord.get(t) - 1)
-        println("after: topicWord.get(t): " + topicWord.get(t))
         val topicDist = new Array[Double](conf.topicNum)
         for (k <- 0 until conf.topicNum) {
           topicDist(k) = ( (doc.get(k) + conf.alpha) * (word.get(k) + conf.beta)
             / (topicWord.get(k) + conf.vocSize * conf.beta) )
-          println("topicDist: k: " + k + " value: " + topicDist(k))
-          println("topicWord.get(k): " + topicWord.get(k))
         }
         val newTopic = getRandFromMultinomial(topicDist)
-        println("newTopic: " + newTopic)
         tokenTopic.put(i, newTopic)
         doc.put(newTopic, doc.get(newTopic) + 1)
         word.put(newTopic, word.get(newTopic) + 1)
@@ -124,7 +110,7 @@ object LDA {
     }
 
     def computePerplexity(conf: Conf, topicWord: DoubleMatrix)
-                         (et: EdgeTriplet[DoubleMatrix, DoubleMatrix])
+                         (et: EdgeTriplet[DoubleMatrix, Array[Int]])
     : Iterator[(VertexId, (Double, Double))] = {
       val (doc, word) = (et.srcAttr, et.dstAttr)
       val docDis = new DoubleMatrix(conf.topicNum)
@@ -141,7 +127,7 @@ object LDA {
     }
 
     def computeDis(conf: Conf, topicWord: DoubleMatrix)
-                  (et: EdgeTriplet[DoubleMatrix, DoubleMatrix])
+                  (et: EdgeTriplet[DoubleMatrix, Array[Int]])
     : Iterator[(VertexId, DoubleMatrix)] = {
       val (doc, word) = (et.srcAttr, et.dstAttr)
       val docDis = new DoubleMatrix(conf.topicNum)
@@ -161,153 +147,59 @@ object LDA {
     var perplexity : Double = 0.0
 
     edges.cache()
-    val g = Graph.fromEdges(edges, defaultF(conf.topicNum))
+    var g = Graph.fromEdges(edges, defaultF(conf.topicNum))
 
     //initialize topic for each token
-    var newG: Graph[DoubleMatrix, DoubleMatrix] = g.mapTriplets(initMapFunc(conf) _)
 
-    newG.vertices.count()
-    newG.edges.count()
-    newG.triplets.count()
-
-    for (triplet <- newG.triplets.collect) {
-      println("check0: docId: " + triplet.srcId + " wordId: "
-        + triplet.dstId + " topic: " + triplet.attr.get(0))
-    }
-
-    t0 = newG.mapReduceTriplets(
+    t0 = g.mapReduceTriplets(
       vertexUpdateFunc(conf),
       (g1: DoubleMatrix, g2: DoubleMatrix) => g1.addColumnVector(g2)
     )
-    newG.vertices.count()
-    newG.edges.count()
-    newG.triplets.count()
 
-    for (triplet <- newG.triplets.collect) {
-      println("check0: docId: " + triplet.srcId + " wordId: "
-        + triplet.dstId + " topic: " + triplet.attr.get(0))
-    }
-
-    for (triplet <- newG.triplets.collect) {
-      println("check!: docId: " + triplet.srcId + " wordId: "
-        + triplet.dstId + " topic: " + triplet.attr.get(0))
-    }
-
-    newG = newG.outerJoinVertices(t0) {
+    g = g.outerJoinVertices(t0) {
       (vid: VertexId, vd: DoubleMatrix,
        msg: Option[DoubleMatrix]) => vd.addColumnVector(msg.get)
-    }
-    newG.vertices.count()
-    newG.edges.count()
-    newG.triplets.count()
-
-    for (triplet <- newG.triplets.collect) {
-      println("check1: docId: " + triplet.srcId + " wordId: "
-        + triplet.dstId + " topic: " + triplet.attr.get(0))
     }
 
     for ( i <- 0 until conf.maxIter) {
 
       //compute total word number for each topic
-      val topicWord = newG.vertices.filter{ case (vid, vd) => vid % 2 == 1 }
+      val topicWord = g.vertices.filter{ case (vid, vd) => vid % 2 == 1 }
         .map{ case (vid, vd) => vd}
         .reduce((a: DoubleMatrix, b: DoubleMatrix) => a.addColumnVector(b))
 
-      for (triplet <- newG.triplets.collect) {
-        println("check2: docId: " + triplet.srcId + " wordId: "
-          + triplet.dstId + " topic: " + triplet.attr.get(0))
-      }
-
       //compute perplexity
-      val perplexityG = newG.mapReduceTriplets(
+      val perplexityG = g.mapReduceTriplets(
         computePerplexity(conf, topicWord),
         (g1: (Double, Double), g2: (Double, Double)) => (g1._1 + g2._1, g1._2)
       )
-      newG.vertices.count()
-      newG.edges.count()
-      newG.triplets.count()
-
-      for (triplet <- newG.triplets.collect) {
-        println("check3: docId: " + triplet.srcId + " wordId: "
-          + triplet.dstId + " topic: " + triplet.attr.get(0))
-      }
 
       val perplexity_numerator = perplexityG.map{ case (vid, (res, nm)) =>
         if (vid %2 == 0) res else 0.0}.reduce(_ + _)
 
-      for (triplet <- newG.triplets.collect) {
-        println("check4: docId: " + triplet.srcId + " wordId: "
-          + triplet.dstId + " topic: " + triplet.attr.get(0))
-      }
-
       val perplexity_denominator = perplexityG.map{ case (vid, (res, nm)) =>
         if (vid %2 == 0) nm else 0.0}.reduce(_ + _)
-
-      for (triplet <- newG.triplets.collect) {
-        println("check5: docId: " + triplet.srcId + " wordId: "
-          + triplet.dstId + " topic: " + triplet.attr.get(0))
-      }
 
       perplexity = math.exp((perplexity_numerator / perplexity_denominator) * (-1.0))
       println("perplexity is: " + perplexity)
 
-      for (triplet <- newG.triplets.collect) {
-        println("check6: docId: " + triplet.srcId + " wordId: "
-          + triplet.dstId + " topic: " + triplet.attr.get(0))
-      }
-
       //assign new topic for each token by using gibbsSampling
-      newG = newG.mapTriplets(gibbsSample(conf, topicWord)_)
-      newG.vertices.count()
-      newG.edges.count()
-      newG.triplets.count()
-
-      for (triplet <- newG.triplets.collect) {
-        println("check7: docId: " + triplet.srcId + " wordId: "
-          + triplet.dstId + " topic: " + triplet.attr.get(0))
-      }
+      g = g.mapTriplets(gibbsSample(conf, topicWord)_)
 
       //update N*T, M*T
-      t1 = newG.mapReduceTriplets(
+      t1 = g.mapReduceTriplets(
         vertexUpdateFunc(conf),
         (g1: DoubleMatrix, g2: DoubleMatrix) => g1.addColumnVector(g2)
       )
 
-      newG.vertices.count()
-      newG.edges.count()
-      newG.triplets.count()
-
-      for (triplet <- newG.triplets.collect) {
-        println("check8: docId: " + triplet.srcId + " wordId: "
-          + triplet.dstId + " topic: " + triplet.attr.get(0))
-      }
-
-      newG = newG.outerJoinVertices(t0) {
+      g = g.outerJoinVertices(t0) {
         (vid: VertexId, vd: DoubleMatrix,
          msg: Option[DoubleMatrix]) => vd.subColumnVector(msg.get)
       }
 
-      newG.vertices.count()
-      newG.edges.count()
-      newG.triplets.count()
-
-      for (triplet <- newG.triplets.collect) {
-        println("check9: docId: " + triplet.srcId + " wordId: "
-          + triplet.dstId + " topic: " + triplet.attr.get(0))
-      }
-
-      newG = newG.outerJoinVertices(t1) {
+      g = g.outerJoinVertices(t1) {
         (vid: VertexId, vd: DoubleMatrix,
          msg: Option[DoubleMatrix]) => vd.addColumnVector(msg.get)
-      }
-
-      newG.vertices.count()
-      newG.edges.count()
-      newG.triplets.count()
-
-      for (triplet <- newG.triplets.collect) {
-        println("check10: docId: " + triplet.srcId + " wordId: "
-          + triplet.dstId + " topic: " + triplet.attr.get(0))
       }
 
       t0 = t1
@@ -315,15 +207,15 @@ object LDA {
     }
 
     //compute total word number for each topic
-    val topicWord = newG.vertices.filter{ case (vid, vd) => vid % 2 == 1 }.map{ case (vid, vd) => vd
+    val topicWord = g.vertices.filter{ case (vid, vd) => vid % 2 == 1 }.map{ case (vid, vd) => vd
     }.reduce((a: DoubleMatrix, b: DoubleMatrix) => a.addColumnVector(b))
 
     //compute docTopicDis and wordTopicDis
-    val disVer = newG.mapReduceTriplets(
+    val disVer = g.mapReduceTriplets(
       computeDis(conf, topicWord),
       (g1: DoubleMatrix, g2: DoubleMatrix) => g1
     )
-    val resG = newG.outerJoinVertices(disVer) {
+    val resG = g.outerJoinVertices(disVer) {
       (vid: VertexId, vd: DoubleMatrix,
        msg: Option[DoubleMatrix]) =>
        if (msg.isDefined) (msg.get) else vd

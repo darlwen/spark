@@ -17,8 +17,6 @@
 
 package org.apache.spark.graphx
 
-import scala.reflect.ClassTag
-
 /**
  * A single directed edge consisting of a source id, target id,
  * and the data associated with the edge.
@@ -29,7 +27,7 @@ import scala.reflect.ClassTag
  * @param dstId The vertex id of the target vertex
  * @param attr The attribute associated with the edge
  */
-case class Edge[@specialized ED: ClassTag] (
+case class Edge[@specialized(Char, Int, Boolean, Byte, Long, Float, Double) ED] (
     var srcId: VertexId = 0,
     var dstId: VertexId = 0,
     var attr: ED = null.asInstanceOf[ED])
