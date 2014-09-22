@@ -37,7 +37,7 @@ object LDA {
                var maxIter  : Int)
     extends Serializable
 
-  def run(edges: RDD[Edge[Array[Int]]], conf: Conf) :
+  def run(edges: RDD[Edge[Int]], conf: Conf) :
     (Graph[DoubleMatrix, DoubleMatrix], DoubleMatrix, Double) = {
 
     //Generate default vertex attribute
@@ -62,36 +62,39 @@ object LDA {
       doubleArrayOps(cumArr).indexWhere(cumDist => cumDist >= rand)
     }
 
-    def initMapFunc(conf: Conf)
-                   (et: EdgeTriplet[DoubleMatrix, Array[Int]])
-    : Array[Int] = {
-      val tokenTopic = new Array[Int](et.attr)
-      for(i <- 0 until et.attr) {
-        tokenTopic(i) = Random.nextInt(conf.topicNum)
+    def initMapFunc(topicNum: Int, triplet: EdgeTriplet[DoubleMatrix, Int])
+    : DoubleMatrix = {
+      val tokenTopic = new DoubleMatrix(triplet.attr)
+      for(i <- 0 until triplet.attr) {
+        tokenTopic.put(i, Random.nextInt(topicNum).toDouble)
       }
+      println("check-1: wordId: " + triplet.srcId + " docId: " + triplet.dstId
+        + " topic: " + tokenTopic.get(0))
       tokenTopic
     }
 
     def vertexUpdateFunc(conf: Conf)
-                        (et: EdgeTriplet[DoubleMatrix, Array[Int]])
+                        (et: EdgeTriplet[DoubleMatrix, DoubleMatrix])
     : Iterator[(VertexId, DoubleMatrix)] = {
-      val doc = new DoubleMatrix(conf.topicNum)
-      val word = new DoubleMatrix(conf.topicNum)
+      val termTopic = new DoubleMatrix(conf.topicNum)
+      println("vertexUpdate: wordId: " + et.srcId + " docId: " + et.dstId
+        + " topic: " + et.attr.get(0))
       for (i <- 0 until et.attr.length) {
-        val t = et.attr(i)
-        doc.put(t, doc.get(t) + 1)
-        word.put(t, word.get(t) + 1)
+        val t = et.attr.get(i).toInt
+        termTopic.put(t, termTopic.get(t) + 1)
       }
-      Iterator((et.srcId, doc), (et.dstId, word))
+      Iterator((et.srcId, termTopic), (et.dstId, termTopic))
     }
 
-    def gibbsSample(conf: Conf, topicWord: DoubleMatrix)
+    def gibbsSampling(conf: Conf, topicWord: DoubleMatrix)
                    (et: EdgeTriplet[DoubleMatrix, DoubleMatrix])
     : DoubleMatrix = {
+      println("gibbsSample: wordId: " + et.srcId + " docId: " + et.dstId
+        + " topic: " + et.attr.get(0))
       val (doc, word) = (et.srcAttr, et.dstAttr)
       val tokenTopic = new DoubleMatrix(et.attr.length)
       for ( i <- 0 until et.attr.length) {
-        val t = et.attr(i)
+        val t = et.attr.get(i).toInt
         doc.put(t, doc.get(t) - 1)
         word.put(t, word.get(t) - 1)
         topicWord.put(t, topicWord.get(t) - 1)
@@ -110,7 +113,7 @@ object LDA {
     }
 
     def computePerplexity(conf: Conf, topicWord: DoubleMatrix)
-                         (et: EdgeTriplet[DoubleMatrix, Array[Int]])
+                         (et: EdgeTriplet[DoubleMatrix, DoubleMatrix])
     : Iterator[(VertexId, (Double, Double))] = {
       val (doc, word) = (et.srcAttr, et.dstAttr)
       val docDis = new DoubleMatrix(conf.topicNum)
@@ -127,7 +130,7 @@ object LDA {
     }
 
     def computeDis(conf: Conf, topicWord: DoubleMatrix)
-                  (et: EdgeTriplet[DoubleMatrix, Array[Int]])
+                  (et: EdgeTriplet[DoubleMatrix, DoubleMatrix])
     : Iterator[(VertexId, DoubleMatrix)] = {
       val (doc, word) = (et.srcAttr, et.dstAttr)
       val docDis = new DoubleMatrix(conf.topicNum)
@@ -140,25 +143,52 @@ object LDA {
       Iterator((et.srcId, docDis), (et.dstId, wordDis))
     }
 
-    var t0 : VertexRDD[DoubleMatrix] = null
-
-    var t1 : VertexRDD[DoubleMatrix] = null
-
     var perplexity : Double = 0.0
 
     edges.cache()
-    var g = Graph.fromEdges(edges, defaultF(conf.topicNum))
+    val G = Graph.fromEdges(edges, defaultF(conf.topicNum))
+
+    var g: Graph[DoubleMatrix, DoubleMatrix] = G.mapTriplets{
+      (pid, iter) =>
+        iter.map { triplet =>
+          val tokenTopic = new DoubleMatrix(triplet.attr)
+          for(i <- 0 until triplet.attr) {
+            tokenTopic.put(i, Random.nextInt(conf.topicNum).toDouble)
+          }
+          println("check-1: wordId: " + triplet.srcId + " docId: " + triplet.dstId
+              + " topic: " + tokenTopic.get(0))
+          tokenTopic
+        }
+    }.cache()
+
+    //debug
+    for (triplet <- g.triplets.collect) {
+      println("check1: wordId: " + triplet.srcId + " docId: " + triplet.dstId
+        + " topic: " + triplet.attr.get(0))
+    }
 
     //initialize topic for each token
 
-    t0 = g.mapReduceTriplets(
+    val t0 = g.mapReduceTriplets(
       vertexUpdateFunc(conf),
       (g1: DoubleMatrix, g2: DoubleMatrix) => g1.addColumnVector(g2)
     )
 
+    //debug
+    for (triplet <- g.triplets.collect) {
+      println("check2: wordId: " + triplet.srcId + " docId: " + triplet.dstId
+        + " topic: " + triplet.attr.get(0))
+    }
+
     g = g.outerJoinVertices(t0) {
       (vid: VertexId, vd: DoubleMatrix,
-       msg: Option[DoubleMatrix]) => vd.addColumnVector(msg.get)
+       msg: Option[DoubleMatrix]) => msg.get
+    }.cache()
+
+    //debug
+    for (triplet <- g.triplets.collect) {
+      println("check3: wordId: " + triplet.srcId + " docId: " + triplet.dstId
+        + " topic: " + triplet.attr.get(0))
     }
 
     for ( i <- 0 until conf.maxIter) {
@@ -174,6 +204,12 @@ object LDA {
         (g1: (Double, Double), g2: (Double, Double)) => (g1._1 + g2._1, g1._2)
       )
 
+      //debug
+      for (triplet <- g.triplets.collect) {
+        println("check4: wordId: " + triplet.srcId + " docId: " + triplet.dstId
+          + " topic: " + triplet.attr.get(0))
+      }
+
       val perplexity_numerator = perplexityG.map{ case (vid, (res, nm)) =>
         if (vid %2 == 0) res else 0.0}.reduce(_ + _)
 
@@ -183,26 +219,65 @@ object LDA {
       perplexity = math.exp((perplexity_numerator / perplexity_denominator) * (-1.0))
       println("perplexity is: " + perplexity)
 
+      val gibbsSample = (et: EdgeTriplet[DoubleMatrix, DoubleMatrix]) => {
+        val (doc, word) = (et.srcAttr, et.dstAttr)
+        val tokenTopic = new DoubleMatrix(et.attr.length)
+        for ( i <- 0 until et.attr.length) {
+          val t = et.attr.get(i).toInt
+          doc.put(t, doc.get(t) - 1)
+          word.put(t, word.get(t) - 1)
+          topicWord.put(t, topicWord.get(t) - 1)
+          val topicDist = new Array[Double](conf.topicNum)
+          for (k <- 0 until conf.topicNum) {
+            topicDist(k) = ( (doc.get(k) + conf.alpha) * (word.get(k) + conf.beta)
+              / (topicWord.get(k) + conf.vocSize * conf.beta) )
+          }
+          val newTopic = getRandFromMultinomial(topicDist)
+          tokenTopic.put(i, newTopic)
+          doc.put(newTopic, doc.get(newTopic) + 1)
+          word.put(newTopic, word.get(newTopic) + 1)
+          topicWord.put(newTopic, topicWord.get(newTopic) + 1)
+        }
+        tokenTopic
+      }
+
       //assign new topic for each token by using gibbsSampling
-      g = g.mapTriplets(gibbsSample(conf, topicWord)_)
+      g = g.mapTriplets{
+        (pid, iter) =>
+          iter.map {
+            et =>
+              gibbsSample(et)
+          }
+      }.cache()
+
+      //debug
+      for (triplet <- g.triplets.collect) {
+        println("check5: wordId: " + triplet.srcId + " docId: " + triplet.dstId
+          + " topic: " + triplet.attr.get(0))
+      }
 
       //update N*T, M*T
-      t1 = g.mapReduceTriplets(
+      val t1 = g.mapReduceTriplets(
         vertexUpdateFunc(conf),
         (g1: DoubleMatrix, g2: DoubleMatrix) => g1.addColumnVector(g2)
       )
 
-      g = g.outerJoinVertices(t0) {
-        (vid: VertexId, vd: DoubleMatrix,
-         msg: Option[DoubleMatrix]) => vd.subColumnVector(msg.get)
+      //debug
+      for (triplet <- g.triplets.collect) {
+        println("check6: wordId: " + triplet.srcId + " docId: " + triplet.dstId
+          + " topic: " + triplet.attr.get(0))
       }
 
       g = g.outerJoinVertices(t1) {
         (vid: VertexId, vd: DoubleMatrix,
-         msg: Option[DoubleMatrix]) => vd.addColumnVector(msg.get)
-      }
+         msg: Option[DoubleMatrix]) => msg.get
+      }.cache()
 
-      t0 = t1
+      //debug
+      for (triplet <- g.triplets.collect) {
+        println("check7: wordId: " + triplet.srcId + " docId: " + triplet.dstId
+          + " topic: " + triplet.attr.get(0))
+      }
 
     }
 
