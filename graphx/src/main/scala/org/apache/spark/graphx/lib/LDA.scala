@@ -62,14 +62,13 @@ object LDA {
       doubleArrayOps(cumArr).indexWhere(cumDist => cumDist >= rand)
     }
 
-    def initMapFunc(topicNum: Int, triplet: EdgeTriplet[DoubleMatrix, Int])
+    def initMapFunc(conf: Conf)
+          (et: EdgeTriplet[DoubleMatrix, Int])
     : DoubleMatrix = {
-      val tokenTopic = new DoubleMatrix(triplet.attr)
-      for(i <- 0 until triplet.attr) {
-        tokenTopic.put(i, Random.nextInt(topicNum).toDouble)
+      val tokenTopic = new DoubleMatrix(et.attr)
+      for(i <- 0 until et.attr) {
+        tokenTopic.put(i, Random.nextInt(conf.topicNum).toDouble)
       }
-      println("check-1: wordId: " + triplet.srcId + " docId: " + triplet.dstId
-        + " topic: " + tokenTopic.get(0))
       tokenTopic
     }
 
@@ -77,8 +76,6 @@ object LDA {
                         (et: EdgeTriplet[DoubleMatrix, DoubleMatrix])
     : Iterator[(VertexId, DoubleMatrix)] = {
       val termTopic = new DoubleMatrix(conf.topicNum)
-      println("vertexUpdate: wordId: " + et.srcId + " docId: " + et.dstId
-        + " topic: " + et.attr.get(0))
       for (i <- 0 until et.attr.length) {
         val t = et.attr.get(i).toInt
         termTopic.put(t, termTopic.get(t) + 1)
@@ -86,11 +83,9 @@ object LDA {
       Iterator((et.srcId, termTopic), (et.dstId, termTopic))
     }
 
-    def gibbsSampling(conf: Conf, topicWord: DoubleMatrix)
+    def gibbsSample(conf: Conf, topicWord: DoubleMatrix)
                    (et: EdgeTriplet[DoubleMatrix, DoubleMatrix])
     : DoubleMatrix = {
-      println("gibbsSample: wordId: " + et.srcId + " docId: " + et.dstId
-        + " topic: " + et.attr.get(0))
       val (doc, word) = (et.srcAttr, et.dstAttr)
       val tokenTopic = new DoubleMatrix(et.attr.length)
       for ( i <- 0 until et.attr.length) {
@@ -148,24 +143,7 @@ object LDA {
     edges.cache()
     val G = Graph.fromEdges(edges, defaultF(conf.topicNum))
 
-    var g: Graph[DoubleMatrix, DoubleMatrix] = G.mapTriplets{
-      (pid, iter) =>
-        iter.map { triplet =>
-          val tokenTopic = new DoubleMatrix(triplet.attr)
-          for(i <- 0 until triplet.attr) {
-            tokenTopic.put(i, Random.nextInt(conf.topicNum).toDouble)
-          }
-          println("check-1: wordId: " + triplet.srcId + " docId: " + triplet.dstId
-              + " topic: " + tokenTopic.get(0))
-          tokenTopic
-        }
-    }.cache()
-
-    //debug
-    for (triplet <- g.triplets.collect) {
-      println("check1: wordId: " + triplet.srcId + " docId: " + triplet.dstId
-        + " topic: " + triplet.attr.get(0))
-    }
+    var g: Graph[DoubleMatrix, DoubleMatrix] = G.mapTriplets(initMapFunc(conf)_).cache()
 
     //initialize topic for each token
 
@@ -174,22 +152,10 @@ object LDA {
       (g1: DoubleMatrix, g2: DoubleMatrix) => g1.addColumnVector(g2)
     )
 
-    //debug
-    for (triplet <- g.triplets.collect) {
-      println("check2: wordId: " + triplet.srcId + " docId: " + triplet.dstId
-        + " topic: " + triplet.attr.get(0))
-    }
-
     g = g.outerJoinVertices(t0) {
       (vid: VertexId, vd: DoubleMatrix,
        msg: Option[DoubleMatrix]) => msg.get
     }.cache()
-
-    //debug
-    for (triplet <- g.triplets.collect) {
-      println("check3: wordId: " + triplet.srcId + " docId: " + triplet.dstId
-        + " topic: " + triplet.attr.get(0))
-    }
 
     for ( i <- 0 until conf.maxIter) {
 
@@ -204,12 +170,6 @@ object LDA {
         (g1: (Double, Double), g2: (Double, Double)) => (g1._1 + g2._1, g1._2)
       )
 
-      //debug
-      for (triplet <- g.triplets.collect) {
-        println("check4: wordId: " + triplet.srcId + " docId: " + triplet.dstId
-          + " topic: " + triplet.attr.get(0))
-      }
-
       val perplexity_numerator = perplexityG.map{ case (vid, (res, nm)) =>
         if (vid %2 == 0) res else 0.0}.reduce(_ + _)
 
@@ -219,42 +179,8 @@ object LDA {
       perplexity = math.exp((perplexity_numerator / perplexity_denominator) * (-1.0))
       println("perplexity is: " + perplexity)
 
-      val gibbsSample = (et: EdgeTriplet[DoubleMatrix, DoubleMatrix]) => {
-        val (doc, word) = (et.srcAttr, et.dstAttr)
-        val tokenTopic = new DoubleMatrix(et.attr.length)
-        for ( i <- 0 until et.attr.length) {
-          val t = et.attr.get(i).toInt
-          doc.put(t, doc.get(t) - 1)
-          word.put(t, word.get(t) - 1)
-          topicWord.put(t, topicWord.get(t) - 1)
-          val topicDist = new Array[Double](conf.topicNum)
-          for (k <- 0 until conf.topicNum) {
-            topicDist(k) = ( (doc.get(k) + conf.alpha) * (word.get(k) + conf.beta)
-              / (topicWord.get(k) + conf.vocSize * conf.beta) )
-          }
-          val newTopic = getRandFromMultinomial(topicDist)
-          tokenTopic.put(i, newTopic)
-          doc.put(newTopic, doc.get(newTopic) + 1)
-          word.put(newTopic, word.get(newTopic) + 1)
-          topicWord.put(newTopic, topicWord.get(newTopic) + 1)
-        }
-        tokenTopic
-      }
-
       //assign new topic for each token by using gibbsSampling
-      g = g.mapTriplets{
-        (pid, iter) =>
-          iter.map {
-            et =>
-              gibbsSample(et)
-          }
-      }.cache()
-
-      //debug
-      for (triplet <- g.triplets.collect) {
-        println("check5: wordId: " + triplet.srcId + " docId: " + triplet.dstId
-          + " topic: " + triplet.attr.get(0))
-      }
+      g = g.mapTriplets(gibbsSample(conf, topicWord)_).cache()
 
       //update N*T, M*T
       val t1 = g.mapReduceTriplets(
@@ -262,25 +188,12 @@ object LDA {
         (g1: DoubleMatrix, g2: DoubleMatrix) => g1.addColumnVector(g2)
       )
 
-      //debug
-      for (triplet <- g.triplets.collect) {
-        println("check6: wordId: " + triplet.srcId + " docId: " + triplet.dstId
-          + " topic: " + triplet.attr.get(0))
-      }
-
       g = g.outerJoinVertices(t1) {
         (vid: VertexId, vd: DoubleMatrix,
          msg: Option[DoubleMatrix]) => msg.get
       }.cache()
 
-      //debug
-      for (triplet <- g.triplets.collect) {
-        println("check7: wordId: " + triplet.srcId + " docId: " + triplet.dstId
-          + " topic: " + triplet.attr.get(0))
-      }
-
     }
-
     //compute total word number for each topic
     val topicWord = g.vertices.filter{ case (vid, vd) => vid % 2 == 1 }.map{ case (vid, vd) => vd
     }.reduce((a: DoubleMatrix, b: DoubleMatrix) => a.addColumnVector(b))
